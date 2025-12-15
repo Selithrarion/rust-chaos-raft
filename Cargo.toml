@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "src-tauri", # gui
+    "raft_core", # raft logic
+    "raft_node", # console bin to start node
+]
+resolver = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true

@@ -1,0 +1,17 @@
+[[nodes]]
+id = 1
+raft_address = "127.0.0.1:8081"
+client_address = "127.0.0.1:9001"
+admin_address = "127.0.0.1:9991"
+
+[[nodes]]
+id = 2
+raft_address = "127.0.0.1:8082"
+client_address = "127.0.0.1:9002"
+admin_address = "127.0.0.1:9992"
+
+[[nodes]]
+id = 3
+raft_address = "127.0.0.1:8083"
+client_address = "127.0.0.1:9003"
+admin_address = "127.0.0.1:9993"

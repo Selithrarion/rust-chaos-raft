@@ -1,0 +1,22 @@
+[package]
+name = "raft_core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+anyhow = "1.0"
+async-trait = "0.1.89"
+rand = "0.9"
+bincode = "1.3.3"
+
+[[test]]
+name = "jepsen"
+path = "../tests/jepsen.rs"
+harness = false
+
+[[test]]
+name = "snapshot"
+path = "../tests/snapshot.rs"
+harness = false
