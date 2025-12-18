@@ -1,0 +1,14 @@
+target
+.git
+Dockerfile
+.idea
+.vscode
+README.md
+*.log
+*.tmp
+data/
+examples/
+tests/
+start_cluster.sh
+prometheus.yml
+docker-compose.yml

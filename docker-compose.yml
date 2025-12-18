@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  node1:
+    build: .
+    container_name: raft_node_1
+    command: "--id 1 --config /app/raft.docker.toml"
+    volumes:
+      - ./data/node_1:/app/data/node_1
+      - ./raft.docker.toml:/app/raft.docker.toml:ro
+    ports:
+      - "8081:8081"
+      - "9001:9001"
+      - "9991:9991"
+      - "9101:9100"
+    networks:
+      - raft-net
+
+  node2:
+    build: .
+    container_name: raft_node_2
+    command: "--id 2 --config /app/raft.docker.toml"
+    volumes:
+      - ./data/node_2:/app/data/node_2
+      - ./raft.docker.toml:/app/raft.docker.toml:ro
+    ports:
+      - "8082:8082"
+      - "9002:9002"
+      - "9992:9992"
+      - "9102:9100"
+    networks:
+      - raft-net
+
+  node3:
+    build: .
+    container_name: raft_node_3
+    command: "--id 3 --config /app/raft.docker.toml"
+    volumes:
+      - ./data/node_3:/app/data/node_3
+      - ./raft.docker.toml:/app/raft.docker.toml:ro
+    ports:
+      - "8083:8083"
+      - "9003:9003"
+      - "9993:9993"
+      - "9103:9100"
+    networks:
+      - raft-net
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - raft-net
+
+  grafana:
+    image: grafana/grafana:9.5.3
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - raft-net
+
+networks:
+  raft-net:
+    driver: bridge

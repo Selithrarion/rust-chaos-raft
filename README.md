@@ -6,6 +6,7 @@ includes an actor model for nodes, wal, a dashboard to kill the leader, and a sp
 ![1](./screenshots/1.png)
 ![2](./screenshots/2.png)
 ![3](./screenshots/3.png)
+![grafana](./screenshots/grafana.png)
 
 ### features
 *   **core raft:** leader election, log replication, heartbeats
@@ -21,6 +22,7 @@ includes an actor model for nodes, wal, a dashboard to kill the leader, and a sp
 *   **dynamic membership:** add/remove nodes on the fly
 *   **optimizations:** maybe batching or pipelining for performance
 *   **client stuff:** leader redirection
+*   **zero-copy:** redo everything with zero-zopy in mind
 *   **code todos:** stuff like refactoring load_log and use zerocopy instead of shared buffer. + replace useInterval pooling on frontend with proper events. + use mpsc instead of mutexes for tcp network connections
 
 ### how to run

@@ -18,6 +18,7 @@ pub enum ClientQueryResponse {
 pub struct NodeStatusInfo {
     pub role: NodeRole,
     pub term: Term,
+    pub commit_index: u64,
     pub leader_id: Option<NodeId>,
 }
 

@@ -97,14 +97,11 @@ struct ClusterStatus {
 
 #[tauri::command]
 async fn get_cluster_status(state: State<'_, AppState>) -> Result<ClusterStatus, String> {
-    let client_state = state.client.lock().await;
-    let addresses: Vec<_> = client_state.node_addresses.clone().into_iter().collect();
+    let mut client = state.client.lock().await;
     let mut handles = Vec::new();
 
-    for (id, addr) in addresses {
-        handles.push(tokio::spawn(
-            async move { query_node_status(id, &addr).await },
-        ));
+    for (id, addr) in &client.node_addresses {
+        handles.push(tokio::spawn(query_node_status(*id, addr.clone())));
     }
 
     let results: Vec<Option<NodeStatusInfo>> = futures::future::join_all(handles)
@@ -114,12 +111,18 @@ async fn get_cluster_status(state: State<'_, AppState>) -> Result<ClusterStatus,
         .collect();
 
     let mut leader_id = 0;
-    let mut max_term = 0;
 
     for status_opt in results.iter().flatten() {
-        if status_opt.role == raft_core::state::NodeRole::Leader && status_opt.term >= max_term {
+        if status_opt.role == raft_core::state::NodeRole::Leader {
+            if let Some(leader_pos) = client
+                .sorted_node_ids
+                .iter()
+                .position(|&id| id == status_opt.leader_id.unwrap_or(0))
+            {
+                client.leader_index = leader_pos;
+            }
+
             leader_id = status_opt.leader_id.unwrap_or(0);
-            max_term = status_opt.term;
         }
     }
 
@@ -130,7 +133,7 @@ async fn get_cluster_status(state: State<'_, AppState>) -> Result<ClusterStatus,
     }
 }
 
-async fn query_node_status(_id: u64, address: &str) -> Option<NodeStatusInfo> {
+async fn query_node_status(_id: u64, address: String) -> Option<NodeStatusInfo> {
     match tokio::time::timeout(
         std::time::Duration::from_millis(200),
         perform_query(address),
@@ -143,7 +146,7 @@ async fn query_node_status(_id: u64, address: &str) -> Option<NodeStatusInfo> {
     }
 }
 
-async fn perform_query(address: &str) -> anyhow::Result<Option<NodeStatusInfo>> {
+async fn perform_query(address: String) -> anyhow::Result<Option<NodeStatusInfo>> {
     let mut stream = TcpStream::connect(address).await?;
     let query = ClientMessage::GetStatus;
     let serialized = bincode::serialize(&query)?;
@@ -303,8 +306,9 @@ async fn client_request(command: String, state: State<'_, AppState>) -> Result<(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let config_str =
-        std::fs::read_to_string("raft.toml").expect("Failed to read raft.toml in tauri app");
+    let config_str = std::fs::read_to_string("../raft.toml")
+        .or_else(|_| std::fs::read_to_string("raft.toml"))
+        .expect("Failed to read raft.toml in tauri app");
     let config: Config =
         toml::from_str(&config_str).expect("Failed to parse raft.toml in tauri app");
 

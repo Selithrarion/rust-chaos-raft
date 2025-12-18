@@ -8,7 +8,7 @@ use crate::storage::Storage;
 use anyhow::anyhow;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Duration, MissedTickBehavior, interval};
 
 const SNAPSHOT_THRESHOLD: usize = 10;
@@ -24,9 +24,6 @@ pub enum Event {
         command: Vec<u8>,
         responder: oneshot::Sender<anyhow::Result<()>>,
     },
-    GetStatus {
-        responder: oneshot::Sender<NodeStatusInfo>,
-    },
 }
 
 pub struct RaftNode {
@@ -35,6 +32,7 @@ pub struct RaftNode {
     peers: Vec<NodeId>,
     votes_received: u64,
     storage: Arc<Storage>,
+    status_tx: watch::Sender<NodeStatusInfo>,
     network: Arc<dyn Network>,
 
     // leader state
@@ -49,6 +47,7 @@ impl RaftNode {
         peers: Vec<NodeId>,
         network: Arc<dyn Network>,
         storage: Arc<Storage>,
+        status_tx: watch::Sender<NodeStatusInfo>,
         event_rx: mpsc::Receiver<Event>,
     ) -> Self {
         let (term, voted_for) = storage.load_metadata().unwrap_or((0, None));
@@ -73,6 +72,7 @@ impl RaftNode {
             event_rx,
             peers,
             storage,
+            status_tx,
             votes_received: 0,
             network,
             next_indices: HashMap::new(),
@@ -112,7 +112,6 @@ impl RaftNode {
                 RaftMessage::AppendEntriesResponse { .. } => false,
                 _ => true,
             },
-            Event::GetStatus { .. } => false,
             _ => true,
         };
         if should_log {
@@ -128,19 +127,13 @@ impl RaftNode {
             Event::ClientCommand { command, responder } => {
                 self.handle_client_command(command, responder).await;
             }
-            Event::GetStatus { responder } => {
-                let status_info = NodeStatusInfo {
-                    role: self.state.role,
-                    term: self.state.current_term,
-                    leader_id: self.state.leader_id,
-                };
-                let _ = responder.send(status_info);
-            }
         }
 
         self.apply_committed_entries();
 
-        if self.state.role == NodeRole::Leader && self.state.log.len() > SNAPSHOT_THRESHOLD {
+        let should_snapshot = self.state.last_applied
+            > self.state.snapshot_metadata.last_included_index + SNAPSHOT_THRESHOLD as u64;
+        if self.state.role == NodeRole::Leader && should_snapshot {
             self.create_snapshot().await;
         }
     }
@@ -161,6 +154,16 @@ impl RaftNode {
                 self.replicate_log_entries().await;
             }
         }
+
+        let status_info = NodeStatusInfo {
+            role: self.state.role,
+            term: self.state.current_term,
+            commit_index: self.state.commit_index,
+            leader_id: self.state.leader_id,
+        };
+        if self.status_tx.send(status_info).is_err() {
+            // no receivers
+        }
     }
 
     async fn become_candidate(&mut self) {
@@ -178,8 +181,18 @@ impl RaftNode {
         let request = RaftMessage::RequestVote {
             term: self.state.current_term,
             candidate_id: self.state.id,
-            last_log_index: self.state.log.last().map_or(0, |e| e.index),
-            last_log_term: self.state.log.last().map_or(0, |e| e.term),
+            last_log_index: self
+                .state
+                .log
+                .last()
+                .map_or(self.state.snapshot_metadata.last_included_index, |e| {
+                    e.index
+                }),
+            last_log_term: self
+                .state
+                .log
+                .last()
+                .map_or(self.state.snapshot_metadata.last_included_term, |e| e.term),
         };
 
         for peer_id in &self.peers {
@@ -285,8 +298,14 @@ impl RaftNode {
             return;
         }
 
-        let last_log = self.state.log.last();
-        let new_log_index = last_log.map_or(1, |entry| entry.index + 1);
+        let last_known_index = self
+            .state
+            .log
+            .last()
+            .map_or(self.state.snapshot_metadata.last_included_index, |e| {
+                e.index
+            });
+        let new_log_index = last_known_index + 1;
         self.pending_responses.insert(new_log_index, responder);
 
         let entry = LogEntry {
@@ -321,8 +340,19 @@ impl RaftNode {
         let can_vote_in_term =
             self.state.voted_for.is_none() || self.state.voted_for == Some(candidate_id);
 
-        let our_last_log_term = self.state.log.last().map_or(0, |e| e.term);
-        let our_last_log_index = self.state.log.last().map_or(0, |e| e.index);
+        let our_last_log_index = self
+            .state
+            .log
+            .last()
+            .map_or(self.state.snapshot_metadata.last_included_index, |e| {
+                e.index
+            });
+        let our_last_log_term = self
+            .state
+            .log
+            .last()
+            .map_or(self.state.snapshot_metadata.last_included_term, |e| e.term);
+
         let log_is_up_to_date = candidate_last_log_term > our_last_log_term
             || (candidate_last_log_term == our_last_log_term
                 && candidate_last_log_index >= our_last_log_index);
@@ -403,7 +433,14 @@ impl RaftNode {
             self.state.id, self.state.current_term
         );
 
-        let next_log_index = self.state.log.last().map_or(1, |e| e.index + 1);
+        let last_known_index = self
+            .state
+            .log
+            .last()
+            .map_or(self.state.snapshot_metadata.last_included_index, |e| {
+                e.index
+            });
+        let next_log_index = last_known_index + 1;
         for peer_id in &self.peers {
             self.next_indices.insert(*peer_id, next_log_index);
             self.match_indices.insert(*peer_id, 0);
@@ -495,7 +532,14 @@ impl RaftNode {
 
     async fn advance_commit_index(&mut self) {
         let mut sorted_matches: Vec<u64> = self.match_indices.values().cloned().collect();
-        sorted_matches.push(self.state.log.last().map_or(0, |e| e.index));
+        let leader_last_index = self
+            .state
+            .log
+            .last()
+            .map_or(self.state.snapshot_metadata.last_included_index, |e| {
+                e.index
+            });
+        sorted_matches.push(leader_last_index);
         sorted_matches.sort_unstable();
         sorted_matches.reverse();
 
@@ -503,7 +547,12 @@ impl RaftNode {
         let majority_match_index = sorted_matches[(required_votes - 1) as usize];
 
         if majority_match_index > self.state.commit_index {
-            if let Some(entry) = self.state.log.get(majority_match_index as usize - 1) {
+            if let Some(entry) = self
+                .state
+                .log
+                .iter()
+                .find(|e| e.index == majority_match_index)
+            {
                 if entry.term == self.state.current_term {
                     println!(
                         "[Node {}] Advancing commit_index to {}",
@@ -639,8 +688,14 @@ impl RaftNode {
         }
 
         if leader_commit > self.state.commit_index {
-            self.state.commit_index =
-                std::cmp::min(leader_commit, self.state.log.last().map_or(0, |e| e.index));
+            let last_log_index = self
+                .state
+                .log
+                .last()
+                .map_or(self.state.snapshot_metadata.last_included_index, |e| {
+                    e.index
+                });
+            self.state.commit_index = std::cmp::min(leader_commit, last_log_index);
         }
 
         let response = RaftMessage::AppendEntriesResponse {

@@ -4,7 +4,7 @@ members = [
     "raft_core", # raft logic
     "raft_node", # console bin to start node
 ]
-resolver = "3"
+resolver = "2"
 
 [profile.release]
 lto = true
